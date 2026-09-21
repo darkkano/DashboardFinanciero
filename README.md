@@ -18,6 +18,39 @@ El tape **en vivo sigue en RAM** (un tick cada 110 ms no espera a disco). Drizzl
 
 ---
 
+## Arquitectura hexagonal
+
+El hexágono es el **dominio** (reglas de la mesa). Nada de Express, Angular o MySQL entra ahí. El mundo exterior se conecta por **puertos**; cada tecnología es un **adaptador**.
+
+```
+                    UI Angular (adaptador de entrada)
+                    feed.service · copilot.service · OnPush
+                                      │
+                         puertos HTTP / WS / SSE
+                                      │
+                 ┌────────────────────▼────────────────────┐
+                 │              DOMINIO PUENTE             │
+                 │  engine.js  ticks, KPIs, rates, SLA     │
+                 │  copilot.js embotellamiento 2 h         │
+                 └───────────┬──────────────────┬──────────┘
+                             │                  │
+              adaptador WS/HTTP            adaptador persistencia
+              server.js Express            db.js + schema.js Drizzle
+                                           (fallback: memoria)
+```
+
+| Capa | Qué es | Archivos |
+|---|---|---|
+| **Dominio** | Qué es un tick, cómo se calcula cola/SLA, cuándo hay embotellamiento. Cero `req`/`res`. | `engine.js` (`makeTx`, `kpis`, `getWindow`), `copilot.js` (`analyze`) |
+| **Puertos de entrada** | Contratos que el mundo usa para hablar con el dominio. | HTTP `/api/*`, WS `/ws`, SSE `/api/copilot/stream` |
+| **Adaptadores de entrada** | Express y Angular implementan esos puertos. | `server.js`, `feed.service.ts`, `copilot.service.ts`, `tick-row.ts` |
+| **Puertos de salida** | “Guarda ticks / briefs” sin saber si es MySQL. | llamadas `persist()` / `persistBrief()` |
+| **Adaptadores de salida** | Drizzle/MySQL; si falla, RAM. | `db.js`, `schema.js`, buffer `rows[]` |
+
+El dominio **no** importa `drizzle-orm`. `engine.js` solo llama `db.insert` detrás de un `try`; si el adaptador cae, la mesa sigue. Angular **no** calcula el embotellamiento: consume el puerto SSE.
+
+---
+
 ## Arranque
 
 ### 1. Base de datos (Drizzle)
@@ -176,3 +209,38 @@ En MySQL, `from`/`to` se guardan como `ccy_from` / `ccy_to` (Drizzle `ccyFrom` /
 4. Copilot en **ALERTA** con el texto de embotellamiento de las últimas 2 horas, escrito como máquina de escribir (SSE).
 5. Botón **Releer las últimas 2 horas** dispara otro stream.
 6. `/api/health` con `"store": "drizzle"` si MySQL está arriba.
+
+---
+
+## Cómo se construyó (paso a paso)
+
+Orden real de armado. Backend **Node/Express** (no Laravel). ORM **Drizzle** (no Prisma).
+
+1. Workspace Angular 21, una app, SCSS, sin SSR ni tests:
+
+```bash
+cd c:\xampp\htdocs\nivelDos
+ng new puente --directory DashboardFinanciero --routing --style=scss --ssr=false --skip-git --skip-tests --defaults
+```
+
+2. Dependencias de mesa + API:
+
+```bash
+cd DashboardFinanciero
+npm install express cors mysql2 drizzle-orm ws concurrently wait-on
+npm install -D drizzle-kit
+```
+
+3. **Dominio** primero: `api/src/engine.js` (corredores, semilla 2 h, ring buffer 420, KPIs, broadcast) y `api/src/copilot.js` (heurística cola ≥ 35, share ≥ 35 %, SLA ≥ 12 min + tokens SSE).
+
+4. **Adaptador HTTP/WS**: `api/src/server.js` en `:3101`, sube `WebSocketServer` en `/ws`, expone `/api/health`, `/api/snapshot`, `/api/copilot/stream`.
+
+5. **Adaptador de persistencia (hexágono → afuera)**: `schema.js` (tablas `ticks`, `copilot_briefs`), `db.js` (pool mysql2 + Drizzle), `load-env.js`, `drizzle.config.mjs`, `setup-db.js` (`CREATE DATABASE puente` + `drizzle-kit push --force`). El engine hidrata o siembra; cada lote se inserta fire-and-forget.
+
+6. **Adaptador UI**: Signals + `OnPush`. `models.ts` → `feed.service.ts` (WS + RxJS `retry`) → `tick-row.ts` → `copilot.service.ts` (EventSource) → `copilot-panel.ts` → `app.ts`. `proxy.conf.json` manda `/api` y `/ws` de `:4210` a `:3101`. Puerto desk en `angular.json`: `4210`.
+
+7. Script `start`: `concurrently` API + `wait-on tcp:3101` + `ng serve --port 4210`.
+
+8. `.env` / `.env.example`: `DATABASE_URL=mysql://root:@127.0.0.1:3306/puente`.
+
+No hay `ng generate component` masivo: cada pieza de UI es un standalone en un `.ts`. El copilot **no** llama a un LLM; el “texto de IA” sale de `analyze()` en el dominio.
