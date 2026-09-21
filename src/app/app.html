@@ -1,0 +1,84 @@
+<header class="top">
+  <div class="brand">
+    <strong>PUENTE</strong>
+    <span>Mesa de remesas · Caracas</span>
+  </div>
+  <div class="rates">
+    @for (rate of feed.rates(); track rate.id) {
+      <b [class.up]="rate.dir >= 0" [class.down]="rate.dir < 0">
+        {{ rate.from }}/{{ rate.to }}
+        {{ rate.value | number: '1.2-4' }}
+      </b>
+    }
+  </div>
+  <div class="live">
+    <i [class.on]="feed.live()"></i>
+    {{ feed.live() ? 'WS vivo' : 'reconectando' }}
+    <em>{{ feed.tps() | number: '1.0-1' }} tps</em>
+    <button type="button" (click)="feed.togglePause()">{{ feed.paused() ? 'Reanudar tape' : 'Pausar tape' }}</button>
+  </div>
+</header>
+
+@if (feed.kpis(); as kpis) {
+  <section class="kpis">
+    <article>
+      <span>Ventana 2h</span>
+      <strong>{{ kpis.total | number }}</strong>
+      <small>tickets</small>
+    </article>
+    <article>
+      <span>En cola + compliance</span>
+      <strong class="warn">{{ kpis.pending | number }}</strong>
+      <small>embotellamiento</small>
+    </article>
+    <article>
+      <span>SLA mediano</span>
+      <strong>{{ kpis.sla | number: '1.0-1' }}m</strong>
+      <small>liberación</small>
+    </article>
+    <article>
+      <span>Corredor caliente</span>
+      <strong>{{ kpis.hotCorridor.replace('-', '→') }}</strong>
+      <small>{{ kpis.hotShare * 100 | number: '1.0-0' }}% de la cola</small>
+    </article>
+    <article>
+      <span>Volumen USD</span>
+      <strong>{{ kpis.volumeUsd | number }}</strong>
+      <small>últimas 2 horas</small>
+    </article>
+  </section>
+}
+
+<section class="desk">
+  <div class="tape">
+    <table>
+      <thead>
+        <tr>
+          <th>Ref</th>
+          <th>Hora</th>
+          <th>Tipo</th>
+          <th>Corredor</th>
+          <th>Monto</th>
+          <th>Destino</th>
+          <th>Estado</th>
+          <th>SLA</th>
+          <th>Op</th>
+          <th>Canal</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (tick of feed.ticks(); track tick.id) {
+          <tr desk-tick [tick]="tick" [fresh]="feed.isFresh(tick.id)"></tr>
+        }
+      </tbody>
+    </table>
+  </div>
+  <desk-copilot
+    [text]="copilot.text()"
+    [headline]="copilot.headline()"
+    [severity]="copilot.severity()"
+    [facts]="copilot.facts()"
+    [streaming]="copilot.streaming()"
+    (reread)="copilot.listen()"
+  />
+</section>
